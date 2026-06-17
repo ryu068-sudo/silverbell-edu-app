@@ -10,12 +10,12 @@
 <meta name="mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-status-bar-style" content="default" />
-<script src="https://cdn.tailwindcss.com"></script>
-<script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js"></script>
-<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
-<script src="https://unpkg.com/@babel/standalone@7.24.7/babel.min.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<script src="https://cdn.tailwindcss.com" defer></script>
+<script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js" defer></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js" defer></script>
+<script src="https://unpkg.com/@babel/standalone@7.24.7/babel.min.js" defer></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js" defer></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js" defer></script>
 </head>
 <body class="bg-slate-50">
 <div id="root"></div>
@@ -52,6 +52,8 @@ const TOTAL_CODES = CATEGORIES.length * ITEMS_PER_CAT;
 const itemsOf = (cat) => Array.from({ length: ITEMS_PER_CAT }, (_, i) => `${cat}-${String(i + 1).padStart(2, "0")}`);
 const genId = (p) => `${p}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
 const nowYM = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`; };
+const todayStr = () => new Date().toISOString().slice(0, 10);
+const isExpired = (endDate) => !!endDate && endDate < todayStr();
 
 const STATE_STYLE = {
   selected: "bg-indigo-600 text-white border-indigo-600 cursor-pointer",
@@ -69,6 +71,16 @@ function allUsedByInstitution(instId, assignments) {
     if (items) items.forEach((it) => used.add(it));
   });
   return used;
+}
+
+function ContractRange({ start, end }) {
+  if (!start && !end) return null;
+  const expired = isExpired(end);
+  return (
+    <span className={`text-xs ${expired ? "text-rose-500 font-medium" : "text-slate-400"}`}>
+      계약 {start || "?"} ~ {end || "?"}{expired && " (만료)"}
+    </span>
+  );
 }
 
 function App() {
@@ -338,7 +350,7 @@ function App() {
           institutions={institutions}
           teacherName={teacherName}
           isAdmin={isAdmin}
-          onAdd={() => setInstForm({ name: "", region: REGIONS[0], instructorId: "" })}
+          onAdd={() => setInstForm({ name: "", region: REGIONS[0], instructorId: "", contractStart: "", contractEnd: "" })}
           onEdit={(i) => setInstForm(i)}
           onDelete={deleteInstitution}
           onMaterial={(i) => setMaterialInst(i)}
@@ -353,7 +365,7 @@ function App() {
           instructors={instructors}
           institutions={institutions}
           isAdmin={isAdmin}
-          onAdd={() => setTeacherForm({ name: "", region: REGIONS[0] })}
+          onAdd={() => setTeacherForm({ name: "", region: REGIONS[0], contractStart: "", contractEnd: "" })}
           onEdit={(t) => setTeacherForm(t)}
           onDelete={deleteTeacher}
           onSchedule={(t) => setScheduleTeacher(t)}
@@ -487,17 +499,20 @@ function InstitutionsTab({ institutions, teacherName, isAdmin, onAdd, onEdit, on
       <div className="divide-y divide-slate-100">
         {filtered.length === 0 && <p className="text-sm text-slate-400 py-8 text-center">등록된 기관이 없어요.</p>}
         {filtered.map((i) => (
-          <div key={i.id} className="flex items-center gap-3 py-2.5">
-            <span className={`text-xs px-2 py-0.5 rounded-full border ${REGION_STYLE[i.region]}`}>{i.region}</span>
-            <span className="font-medium text-slate-800 text-sm flex-1">{i.name}</span>
-            <span className="text-xs text-slate-500">담당강사: {teacherName(i.instructorId)}</span>
-            <button onClick={() => onMaterial(i)} className="text-slate-400 hover:text-emerald-600 p-1" title="교구현황">📦</button>
-            {isAdmin && (
-              <>
-                <button onClick={() => onEdit(i)} className="text-slate-400 hover:text-indigo-600 p-1">✎</button>
-                <button onClick={() => onDelete(i.id)} className="text-slate-400 hover:text-rose-600 p-1">🗑</button>
-              </>
-            )}
+          <div key={i.id} className="py-2.5">
+            <div className="flex items-center gap-3">
+              <span className={`text-xs px-2 py-0.5 rounded-full border ${REGION_STYLE[i.region]}`}>{i.region}</span>
+              <span className="font-medium text-slate-800 text-sm flex-1">{i.name}</span>
+              <span className="text-xs text-slate-500">담당강사: {teacherName(i.instructorId)}</span>
+              <button onClick={() => onMaterial(i)} className="text-slate-400 hover:text-emerald-600 p-1" title="교구현황">📦</button>
+              {isAdmin && (
+                <>
+                  <button onClick={() => onEdit(i)} className="text-slate-400 hover:text-indigo-600 p-1">✎</button>
+                  <button onClick={() => onDelete(i.id)} className="text-slate-400 hover:text-rose-600 p-1">🗑</button>
+                </>
+              )}
+            </div>
+            <div className="mt-1 ml-1"><ContractRange start={i.contractStart} end={i.contractEnd} /></div>
           </div>
         ))}
       </div>
@@ -520,17 +535,20 @@ function InstructorsTab({ instructors, institutions, isAdmin, onAdd, onEdit, onD
       <div className="divide-y divide-slate-100">
         {instructors.length === 0 && <p className="text-sm text-slate-400 py-8 text-center">등록된 강사가 없어요.</p>}
         {instructors.map((t) => (
-          <div key={t.id} className="flex items-center gap-3 py-2.5">
-            <span className={`text-xs px-2 py-0.5 rounded-full border ${REGION_STYLE[t.region]}`}>{t.region}</span>
-            <span className="font-medium text-slate-800 text-sm flex-1">{t.name}</span>
-            <span className="text-xs text-slate-500">담당기관 {countFor(t.id)}곳</span>
-            <button onClick={() => onSchedule(t)} className="text-slate-400 hover:text-emerald-600 p-1" title="방문일정">📅</button>
-            {isAdmin && (
-              <>
-                <button onClick={() => onEdit(t)} className="text-slate-400 hover:text-indigo-600 p-1">✎</button>
-                <button onClick={() => onDelete(t.id)} className="text-slate-400 hover:text-rose-600 p-1">🗑</button>
-              </>
-            )}
+          <div key={t.id} className="py-2.5">
+            <div className="flex items-center gap-3">
+              <span className={`text-xs px-2 py-0.5 rounded-full border ${REGION_STYLE[t.region]}`}>{t.region}</span>
+              <span className="font-medium text-slate-800 text-sm flex-1">{t.name}</span>
+              <span className="text-xs text-slate-500">담당기관 {countFor(t.id)}곳</span>
+              <button onClick={() => onSchedule(t)} className="text-slate-400 hover:text-emerald-600 p-1" title="방문일정">📅</button>
+              {isAdmin && (
+                <>
+                  <button onClick={() => onEdit(t)} className="text-slate-400 hover:text-indigo-600 p-1">✎</button>
+                  <button onClick={() => onDelete(t.id)} className="text-slate-400 hover:text-rose-600 p-1">🗑</button>
+                </>
+              )}
+            </div>
+            <div className="mt-1 ml-1"><ContractRange start={t.contractStart} end={t.contractEnd} /></div>
           </div>
         ))}
       </div>
@@ -676,6 +694,16 @@ function InstFormModal({ form, setForm, instructors, onSave, onClose }) {
             {candidates.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
           </select>
         </Field>
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="계약 시작일">
+            <input type="date" value={form.contractStart || ""} onChange={(e) => setForm({ ...form, contractStart: e.target.value })}
+              className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-indigo-400" />
+          </Field>
+          <Field label="계약 종료일">
+            <input type="date" value={form.contractEnd || ""} onChange={(e) => setForm({ ...form, contractEnd: e.target.value })}
+              className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-indigo-400" />
+          </Field>
+        </div>
       </div>
       <button onClick={() => onSave(form)} disabled={!form.name.trim()}
         className="w-full mt-4 bg-indigo-600 text-white text-sm font-medium py-2.5 rounded-lg disabled:opacity-40 hover:bg-indigo-700">
@@ -699,6 +727,16 @@ function TeacherFormModal({ form, setForm, onSave, onClose }) {
             {REGIONS.map((r) => <option key={r} value={r}>{r}</option>)}
           </select>
         </Field>
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="계약 시작일">
+            <input type="date" value={form.contractStart || ""} onChange={(e) => setForm({ ...form, contractStart: e.target.value })}
+              className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-indigo-400" />
+          </Field>
+          <Field label="계약 종료일">
+            <input type="date" value={form.contractEnd || ""} onChange={(e) => setForm({ ...form, contractEnd: e.target.value })}
+              className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-indigo-400" />
+          </Field>
+        </div>
       </div>
       <button onClick={() => onSave(form)} disabled={!form.name.trim()}
         className="w-full mt-4 bg-indigo-600 text-white text-sm font-medium py-2.5 rounded-lg disabled:opacity-40 hover:bg-indigo-700">
