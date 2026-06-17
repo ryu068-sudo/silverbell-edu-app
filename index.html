@@ -1,0 +1,929 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>실버벨에듀 교구배정관리</title>
+<link rel="manifest" href="manifest.json" />
+<meta name="theme-color" content="#4f46e5" />
+<link rel="apple-touch-icon" href="icon-192.png" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="default" />
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+</head>
+<body class="bg-slate-50">
+<div id="root"></div>
+<script type="text/babel">
+
+const firebaseConfig = {
+  apiKey: "AIzaSyCmTJnoxS2AI5V7stT3httOF7rOqT7UdSA",
+  authDomain: "sliverbelledu.firebaseapp.com",
+  projectId: "sliverbelledu",
+  storageBucket: "sliverbelledu.firebasestorage.app",
+  messagingSenderId: "866676926716",
+  appId: "1:866676926716:web:bb3624766adf7cbf62cf79",
+};
+firebase.initializeApp(firebaseConfig);
+const db = firebase.firestore();
+const DOC = (name) => db.collection("silverbellEdu").doc(name);
+
+/* 마스터 비밀번호 기본값: 처음에는 0000이고, 로그인 후 관리자 화면에서 직접 바꿀 수 있어요. */
+const DEFAULT_MASTER_PASSWORD = "0000";
+
+const { useState, useEffect, useMemo } = React;
+
+const REGIONS = ["전북", "전남", "충청"];
+const REGION_STYLE = {
+  "전북": "bg-blue-100 text-blue-700 border-blue-200",
+  "전남": "bg-emerald-100 text-emerald-700 border-emerald-200",
+  "충청": "bg-amber-100 text-amber-700 border-amber-200",
+};
+const ALPHA = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
+const HANGUL = "가나다라마바사아자차카타파하".split("");
+const CATEGORIES = [...ALPHA, ...HANGUL];
+const ITEMS_PER_CAT = 16;
+const TOTAL_CODES = CATEGORIES.length * ITEMS_PER_CAT;
+const itemsOf = (cat) => Array.from({ length: ITEMS_PER_CAT }, (_, i) => `${cat}-${String(i + 1).padStart(2, "0")}`);
+const genId = (p) => `${p}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+const nowYM = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`; };
+
+const STATE_STYLE = {
+  selected: "bg-indigo-600 text-white border-indigo-600 cursor-pointer",
+  used: "bg-slate-200 text-slate-400 border-slate-200 cursor-not-allowed",
+  conflict: "bg-rose-100 text-rose-400 border-rose-200 cursor-not-allowed",
+  available: "bg-white text-slate-500 border-slate-300 hover:border-indigo-400 hover:bg-indigo-50 cursor-pointer",
+  filled: "bg-emerald-500 text-white border-emerald-500 cursor-default",
+  empty: "bg-white text-slate-300 border-slate-200 cursor-default",
+};
+
+function allUsedByInstitution(instId, assignments) {
+  const used = new Set();
+  Object.values(assignments).forEach((data) => {
+    const items = data[instId];
+    if (items) items.forEach((it) => used.add(it));
+  });
+  return used;
+}
+
+function App() {
+  const [tab, setTab] = useState("institutions");
+  const [institutions, setInstitutions] = useState([]);
+  const [instructors, setInstructors] = useState([]);
+  const [assignments, setAssignments] = useState({});
+  const [schedules, setSchedules] = useState({});
+  const [adminAccounts, setAdminAccounts] = useState([]);
+  const [masterPassword, setMasterPassword] = useState(DEFAULT_MASTER_PASSWORD);
+  const [loading, setLoading] = useState(true);
+  const [banner, setBanner] = useState(null);
+
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [currentAdminName, setCurrentAdminName] = useState("");
+  const [showLogin, setShowLogin] = useState(false);
+  const [loginError, setLoginError] = useState("");
+  const [showAdminManage, setShowAdminManage] = useState(false);
+
+  const [instForm, setInstForm] = useState(null);
+  const [teacherForm, setTeacherForm] = useState(null);
+  const [pickerInst, setPickerInst] = useState(null);
+  const [pickerSelected, setPickerSelected] = useState([]);
+  const [historyInst, setHistoryInst] = useState(null);
+  const [materialInst, setMaterialInst] = useState(null);
+  const [scheduleTeacher, setScheduleTeacher] = useState(null);
+
+  const [month, setMonth] = useState(nowYM());
+  const [search, setSearch] = useState("");
+  const [regionFilter, setRegionFilter] = useState("전체");
+
+  useEffect(() => {
+    let loaded = { roster: false, assignments: false, schedules: false, admins: false, settings: false };
+    const checkAllLoaded = () => { if (loaded.roster && loaded.assignments && loaded.schedules && loaded.admins && loaded.settings) setLoading(false); };
+
+    const unsubRoster = DOC("roster").onSnapshot((snap) => {
+      const d = snap.exists ? snap.data() : {};
+      setInstitutions(d.institutions || []);
+      setInstructors(d.instructors || []);
+      loaded.roster = true; checkAllLoaded();
+    }, (err) => { setBanner("기관/강사 데이터를 불러오지 못했어요: " + err.message); loaded.roster = true; checkAllLoaded(); });
+
+    const unsubAssign = DOC("assignments").onSnapshot((snap) => {
+      setAssignments(snap.exists ? (snap.data() || {}) : {});
+      loaded.assignments = true; checkAllLoaded();
+    }, (err) => { setBanner("배정 데이터를 불러오지 못했어요: " + err.message); loaded.assignments = true; checkAllLoaded(); });
+
+    const unsubSched = DOC("schedules").onSnapshot((snap) => {
+      setSchedules(snap.exists ? (snap.data() || {}) : {});
+      loaded.schedules = true; checkAllLoaded();
+    }, (err) => { setBanner("일정 데이터를 불러오지 못했어요: " + err.message); loaded.schedules = true; checkAllLoaded(); });
+
+    const unsubAdmins = DOC("admins").onSnapshot((snap) => {
+      const d = snap.exists ? snap.data() : {};
+      setAdminAccounts(d.list || []);
+      loaded.admins = true; checkAllLoaded();
+    }, (err) => { setBanner("관리자 계정 데이터를 불러오지 못했어요: " + err.message); loaded.admins = true; checkAllLoaded(); });
+
+    const unsubSettings = DOC("settings").onSnapshot((snap) => {
+      const d = snap.exists ? snap.data() : {};
+      setMasterPassword(d.masterPassword || DEFAULT_MASTER_PASSWORD);
+      loaded.settings = true; checkAllLoaded();
+    }, (err) => { setBanner("설정 데이터를 불러오지 못했어요: " + err.message); loaded.settings = true; checkAllLoaded(); });
+
+    return () => { unsubRoster(); unsubAssign(); unsubSched(); unsubAdmins(); unsubSettings(); };
+  }, []);
+
+  function persistRoster(insts, instrs) {
+    DOC("roster").set({ institutions: insts, instructors: instrs }).catch((e) => setBanner("저장 실패: " + e.message));
+  }
+  function persistAssignments(data) {
+    DOC("assignments").set(data).catch((e) => setBanner("저장 실패: " + e.message));
+  }
+  function persistSchedules(data) {
+    DOC("schedules").set(data).catch((e) => setBanner("저장 실패: " + e.message));
+  }
+  function persistAdmins(list) {
+    DOC("admins").set({ list }).catch((e) => setBanner("저장 실패: " + e.message));
+  }
+  function persistMasterPassword(pw) {
+    DOC("settings").set({ masterPassword: pw }).catch((e) => setBanner("저장 실패: " + e.message));
+  }
+
+  function handleLogin(name, pw) {
+    const matched = adminAccounts.find((a) => a.name === name.trim() && a.password === pw);
+    if (matched) { setIsAdmin(true); setCurrentAdminName(matched.name); setShowLogin(false); setLoginError(""); return; }
+    if (pw === masterPassword) { setIsAdmin(true); setCurrentAdminName(name.trim() || "마스터관리자"); setShowLogin(false); setLoginError(""); return; }
+    setLoginError("이름 또는 비밀번호가 올바르지 않아요.");
+  }
+  function logout() { setIsAdmin(false); setCurrentAdminName(""); }
+  function changeMasterPassword(pw) {
+    if (!pw) return;
+    setMasterPassword(pw);
+    persistMasterPassword(pw);
+  }
+  function addAdminAccount(name, pw) {
+    const trimmed = name.trim();
+    if (!trimmed || !pw) return;
+    if (adminAccounts.some((a) => a.name === trimmed)) { setBanner("이미 같은 이름의 관리자 계정이 있어요."); return; }
+    const next = [...adminAccounts, { id: genId("admin"), name: trimmed, password: pw }];
+    setAdminAccounts(next);
+    persistAdmins(next);
+  }
+  function deleteAdminAccount(id) {
+    if (!window.confirm("이 관리자 계정을 삭제할까요?")) return;
+    const next = adminAccounts.filter((a) => a.id !== id);
+    setAdminAccounts(next);
+    persistAdmins(next);
+  }
+
+  function saveInstitution(form) {
+    let next;
+    if (form.id) next = institutions.map((i) => (i.id === form.id ? { ...i, ...form } : i));
+    else next = [...institutions, { ...form, id: genId("inst") }];
+    setInstitutions(next);
+    persistRoster(next, instructors);
+    setInstForm(null);
+  }
+  function deleteInstitution(id) {
+    if (!window.confirm("이 기관을 삭제할까요? 배정 이력은 유지됩니다.")) return;
+    const next = institutions.filter((i) => i.id !== id);
+    setInstitutions(next);
+    persistRoster(next, instructors);
+  }
+  function saveTeacher(form) {
+    let next;
+    if (form.id) next = instructors.map((t) => (t.id === form.id ? { ...t, ...form } : t));
+    else next = [...instructors, { ...form, id: genId("teacher") }];
+    setInstructors(next);
+    persistRoster(institutions, next);
+    setTeacherForm(null);
+  }
+  function deleteTeacher(id) {
+    if (!window.confirm("이 강사를 삭제할까요? 담당 기관은 '미배정'으로 변경됩니다.")) return;
+    const nextTeachers = instructors.filter((t) => t.id !== id);
+    const nextInst = institutions.map((i) => (i.instructorId === id ? { ...i, instructorId: null } : i));
+    setInstructors(nextTeachers);
+    setInstitutions(nextInst);
+    persistRoster(nextInst, nextTeachers);
+  }
+
+  function openPicker(inst) {
+    setPickerInst(inst);
+    setPickerSelected((assignments[month] && assignments[month][inst.id]) || []);
+  }
+  function toggleItem(code) {
+    setPickerSelected((prev) => {
+      if (prev.includes(code)) return prev.filter((c) => c !== code);
+      if (prev.length >= 16) return prev;
+      return [...prev, code];
+    });
+  }
+  function saveAssignment() {
+    const next = { ...assignments, [month]: { ...(assignments[month] || {}), [pickerInst.id]: pickerSelected } };
+    setAssignments(next);
+    persistAssignments(next);
+    setPickerInst(null);
+  }
+
+  function addScheduleEntry(instructorId, date, institutionId) {
+    const list = schedules[instructorId] || [];
+    const entry = { id: genId("sched"), date, institutionId };
+    const next = { ...schedules, [instructorId]: [...list, entry].sort((a, b) => a.date.localeCompare(b.date)) };
+    setSchedules(next);
+    persistSchedules(next);
+  }
+  function deleteScheduleEntry(instructorId, entryId) {
+    const next = { ...schedules, [instructorId]: (schedules[instructorId] || []).filter((e) => e.id !== entryId) };
+    setSchedules(next);
+    persistSchedules(next);
+  }
+
+  const historySet = useMemo(() => {
+    if (!pickerInst) return new Set();
+    const used = new Set();
+    Object.entries(assignments).forEach(([m, data]) => {
+      if (m === month) return;
+      const items = data[pickerInst.id];
+      if (items) items.forEach((it) => used.add(it));
+    });
+    return used;
+  }, [pickerInst, assignments, month]);
+
+  const conflictSet = useMemo(() => {
+    if (!pickerInst) return new Set();
+    const used = new Set();
+    const data = assignments[month] || {};
+    Object.entries(data).forEach(([otherId, items]) => {
+      if (otherId === pickerInst.id) return;
+      items.forEach((it) => used.add(it));
+    });
+    return used;
+  }, [pickerInst, assignments, month]);
+
+  function resetAll() {
+    if (!window.confirm("모든 기관/강사/배정/일정 데이터가 삭제됩니다. (관리자 계정·비밀번호는 유지됩니다) 계속할까요?")) return;
+    setInstitutions([]); setInstructors([]); setAssignments({}); setSchedules({});
+    persistRoster([], []); persistAssignments({}); persistSchedules({});
+  }
+
+  const teacherName = (id) => instructors.find((t) => t.id === id)?.name || "미배정";
+  const monthData = assignments[month] || {};
+
+  const filteredInst = institutions.filter((i) => {
+    if (regionFilter !== "전체" && i.region !== regionFilter) return false;
+    if (search && !i.name.includes(search)) return false;
+    return true;
+  });
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-screen text-slate-500 gap-2">
+        <div className="animate-spin rounded-full h-5 w-5 border-2 border-slate-300 border-t-indigo-600"></div>
+        데이터를 불러오는 중...
+      </div>
+    );
+  }
+
+  return (
+    <div className="max-w-5xl mx-auto p-4 sm:p-6 bg-slate-50 min-h-screen">
+      <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
+        <h1 className="text-xl font-bold text-slate-800">실버벨에듀 교구배정관리</h1>
+        <div className="flex items-center gap-3">
+          {isAdmin ? (
+            <>
+              <span className="text-xs bg-indigo-50 text-indigo-700 px-2 py-1 rounded-full font-medium">🔓 {currentAdminName}님 (관리자)</span>
+              <button onClick={() => setShowAdminManage(true)} className="text-xs text-slate-400 hover:text-indigo-600">계정관리</button>
+              <button onClick={logout} className="text-xs text-slate-400 hover:text-slate-600">로그아웃</button>
+              <button onClick={resetAll} className="flex items-center gap-1 text-xs text-slate-400 hover:text-rose-500 transition-colors">↺ 전체 초기화</button>
+            </>
+          ) : (
+            <button onClick={() => { setShowLogin(true); setLoginError(""); }} className="flex items-center gap-1 text-xs text-slate-400 hover:text-indigo-600">
+              🔒 관리자 로그인
+            </button>
+          )}
+        </div>
+      </div>
+
+      {banner && (
+        <div className="mb-4 flex items-center gap-2 bg-rose-50 border border-rose-200 text-rose-700 text-sm rounded-lg px-3 py-2">
+          ⚠ {banner}
+          <button onClick={() => setBanner(null)} className="ml-auto">×</button>
+        </div>
+      )}
+
+      <div className="flex gap-1 mb-5 bg-white rounded-xl p-1 border border-slate-200 overflow-x-auto">
+        {[
+          { key: "institutions", label: "기관 관리", icon: "🏢" },
+          { key: "instructors", label: "강사 관리", icon: "👥" },
+          { key: "assign", label: "월별 배정", icon: "📅" },
+          { key: "status", label: "배정 현황", icon: "📋" },
+        ].map((t) => (
+          <button
+            key={t.key}
+            onClick={() => setTab(t.key)}
+            className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium whitespace-nowrap transition-colors ${
+              tab === t.key ? "bg-indigo-600 text-white" : "text-slate-600 hover:bg-slate-100"
+            }`}
+          >
+            <span>{t.icon}</span> {t.label}
+          </button>
+        ))}
+      </div>
+
+      {tab === "institutions" && (
+        <InstitutionsTab
+          institutions={institutions}
+          teacherName={teacherName}
+          isAdmin={isAdmin}
+          onAdd={() => setInstForm({ name: "", region: REGIONS[0], instructorId: "" })}
+          onEdit={(i) => setInstForm(i)}
+          onDelete={deleteInstitution}
+          onMaterial={(i) => setMaterialInst(i)}
+          search={search} setSearch={setSearch}
+          regionFilter={regionFilter} setRegionFilter={setRegionFilter}
+          filtered={filteredInst}
+        />
+      )}
+
+      {tab === "instructors" && (
+        <InstructorsTab
+          instructors={instructors}
+          institutions={institutions}
+          isAdmin={isAdmin}
+          onAdd={() => setTeacherForm({ name: "", region: REGIONS[0] })}
+          onEdit={(t) => setTeacherForm(t)}
+          onDelete={deleteTeacher}
+          onSchedule={(t) => setScheduleTeacher(t)}
+        />
+      )}
+
+      {tab === "assign" && (
+        <AssignTab
+          month={month} setMonth={setMonth}
+          institutions={filteredInst}
+          teacherName={teacherName}
+          monthData={monthData}
+          onPick={openPicker}
+          search={search} setSearch={setSearch}
+          regionFilter={regionFilter} setRegionFilter={setRegionFilter}
+        />
+      )}
+
+      {tab === "status" && (
+        <StatusTab
+          month={month} setMonth={setMonth}
+          institutions={institutions}
+          teacherName={teacherName}
+          monthData={monthData}
+          onHistory={(i) => setHistoryInst(i)}
+        />
+      )}
+
+      {instForm && (
+        <InstFormModal form={instForm} setForm={setInstForm} instructors={instructors} onSave={saveInstitution} onClose={() => setInstForm(null)} />
+      )}
+      {teacherForm && (
+        <TeacherFormModal form={teacherForm} setForm={setTeacherForm} onSave={saveTeacher} onClose={() => setTeacherForm(null)} />
+      )}
+      {pickerInst && (
+        <PickerModal
+          inst={pickerInst} month={month} selected={pickerSelected}
+          historySet={historySet} conflictSet={conflictSet}
+          onToggle={toggleItem} onSave={saveAssignment} onClose={() => setPickerInst(null)}
+        />
+      )}
+      {historyInst && (
+        <HistoryModal inst={historyInst} assignments={assignments} onClose={() => setHistoryInst(null)} />
+      )}
+      {materialInst && (
+        <MaterialStatusModal
+          inst={materialInst}
+          usedSet={allUsedByInstitution(materialInst.id, assignments)}
+          onClose={() => setMaterialInst(null)}
+        />
+      )}
+      {scheduleTeacher && (
+        <ScheduleModal
+          teacher={scheduleTeacher}
+          institutions={institutions}
+          isAdmin={isAdmin}
+          entries={(schedules[scheduleTeacher.id] || []).slice().sort((a, b) => a.date.localeCompare(b.date))}
+          onAdd={(date, institutionId) => addScheduleEntry(scheduleTeacher.id, date, institutionId)}
+          onDelete={(entryId) => deleteScheduleEntry(scheduleTeacher.id, entryId)}
+          onClose={() => setScheduleTeacher(null)}
+        />
+      )}
+      {showLogin && (
+        <LoginModal onSubmit={handleLogin} onClose={() => setShowLogin(false)} error={loginError} />
+      )}
+      {showAdminManage && (
+        <AdminManageModal
+          accounts={adminAccounts}
+          currentAdminName={currentAdminName}
+          onAdd={addAdminAccount}
+          onDelete={deleteAdminAccount}
+          onChangeMasterPassword={changeMasterPassword}
+          onClose={() => setShowAdminManage(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+function CodeGrid({ getState, onClick }) {
+  return (
+    <div className="overflow-x-auto border border-slate-100 rounded-lg max-h-[50vh]">
+      <table className="border-collapse">
+        <tbody>
+          {CATEGORIES.map((cat) => (
+            <tr key={cat}>
+              <td className="sticky left-0 bg-white pr-2 pl-1 font-mono text-xs font-semibold text-slate-600 w-8 z-10">{cat}</td>
+              {itemsOf(cat).map((code, idx) => {
+                const state = getState(code);
+                const style = STATE_STYLE[state] || STATE_STYLE.available;
+                const clickable = !!onClick && (state === "available" || state === "selected");
+                return (
+                  <td key={code} className="p-0">
+                    <button type="button" disabled={!clickable} onClick={() => clickable && onClick(code)}
+                      className={`w-6 h-6 m-0.5 rounded text-[9px] flex items-center justify-center border transition-colors ${style}`}
+                      title={code}>
+                      {idx + 1}
+                    </button>
+                  </td>
+                );
+              })}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function InstitutionsTab({ institutions, teacherName, isAdmin, onAdd, onEdit, onDelete, onMaterial, search, setSearch, regionFilter, setRegionFilter, filtered }) {
+  return (
+    <div className="bg-white rounded-xl border border-slate-200 p-4">
+      <div className="flex flex-wrap items-center gap-2 mb-4">
+        <div className="relative flex-1 min-w-[160px]">
+          <span className="absolute left-2.5 top-2 text-slate-400 text-sm">🔍</span>
+          <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="기관명 검색"
+            className="w-full pl-8 pr-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:border-indigo-400" />
+        </div>
+        <select value={regionFilter} onChange={(e) => setRegionFilter(e.target.value)}
+          className="text-sm border border-slate-200 rounded-lg px-2 py-2 outline-none">
+          <option value="전체">전체 지역</option>
+          {REGIONS.map((r) => <option key={r} value={r}>{r}</option>)}
+        </select>
+        {isAdmin && (
+          <button onClick={onAdd} className="flex items-center gap-1 bg-indigo-600 text-white text-sm px-3 py-2 rounded-lg hover:bg-indigo-700">
+            + 기관 추가
+          </button>
+        )}
+      </div>
+      <div className="text-xs text-slate-400 mb-2">총 {institutions.length}개 기관 (검색결과 {filtered.length}개){!isAdmin && " · 보기 전용 모드"}</div>
+      <div className="divide-y divide-slate-100">
+        {filtered.length === 0 && <p className="text-sm text-slate-400 py-8 text-center">등록된 기관이 없어요.</p>}
+        {filtered.map((i) => (
+          <div key={i.id} className="flex items-center gap-3 py-2.5">
+            <span className={`text-xs px-2 py-0.5 rounded-full border ${REGION_STYLE[i.region]}`}>{i.region}</span>
+            <span className="font-medium text-slate-800 text-sm flex-1">{i.name}</span>
+            <span className="text-xs text-slate-500">담당강사: {teacherName(i.instructorId)}</span>
+            <button onClick={() => onMaterial(i)} className="text-slate-400 hover:text-emerald-600 p-1" title="교구현황">📦</button>
+            {isAdmin && (
+              <>
+                <button onClick={() => onEdit(i)} className="text-slate-400 hover:text-indigo-600 p-1">✎</button>
+                <button onClick={() => onDelete(i.id)} className="text-slate-400 hover:text-rose-600 p-1">🗑</button>
+              </>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function InstructorsTab({ instructors, institutions, isAdmin, onAdd, onEdit, onDelete, onSchedule }) {
+  const countFor = (id) => institutions.filter((i) => i.instructorId === id).length;
+  return (
+    <div className="bg-white rounded-xl border border-slate-200 p-4">
+      <div className="flex items-center justify-between mb-4">
+        <div className="text-xs text-slate-400">총 {instructors.length}명{!isAdmin && " · 보기 전용 모드"}</div>
+        {isAdmin && (
+          <button onClick={onAdd} className="flex items-center gap-1 bg-indigo-600 text-white text-sm px-3 py-2 rounded-lg hover:bg-indigo-700">
+            + 강사 추가
+          </button>
+        )}
+      </div>
+      <div className="divide-y divide-slate-100">
+        {instructors.length === 0 && <p className="text-sm text-slate-400 py-8 text-center">등록된 강사가 없어요.</p>}
+        {instructors.map((t) => (
+          <div key={t.id} className="flex items-center gap-3 py-2.5">
+            <span className={`text-xs px-2 py-0.5 rounded-full border ${REGION_STYLE[t.region]}`}>{t.region}</span>
+            <span className="font-medium text-slate-800 text-sm flex-1">{t.name}</span>
+            <span className="text-xs text-slate-500">담당기관 {countFor(t.id)}곳</span>
+            <button onClick={() => onSchedule(t)} className="text-slate-400 hover:text-emerald-600 p-1" title="방문일정">📅</button>
+            {isAdmin && (
+              <>
+                <button onClick={() => onEdit(t)} className="text-slate-400 hover:text-indigo-600 p-1">✎</button>
+                <button onClick={() => onDelete(t.id)} className="text-slate-400 hover:text-rose-600 p-1">🗑</button>
+              </>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function AssignTab({ month, setMonth, institutions, teacherName, monthData, onPick, search, setSearch, regionFilter, setRegionFilter }) {
+  return (
+    <div className="bg-white rounded-xl border border-slate-200 p-4">
+      <div className="flex flex-wrap items-center gap-2 mb-4">
+        <input type="month" value={month} onChange={(e) => setMonth(e.target.value)}
+          className="text-sm border border-slate-200 rounded-lg px-2 py-2 outline-none" />
+        <div className="relative flex-1 min-w-[140px]">
+          <span className="absolute left-2.5 top-2 text-slate-400 text-sm">🔍</span>
+          <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="기관명 검색"
+            className="w-full pl-8 pr-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:border-indigo-400" />
+        </div>
+        <select value={regionFilter} onChange={(e) => setRegionFilter(e.target.value)}
+          className="text-sm border border-slate-200 rounded-lg px-2 py-2 outline-none">
+          <option value="전체">전체 지역</option>
+          {REGIONS.map((r) => <option key={r} value={r}>{r}</option>)}
+        </select>
+      </div>
+      <div className="divide-y divide-slate-100">
+        {institutions.length === 0 && <p className="text-sm text-slate-400 py-8 text-center">조건에 맞는 기관이 없어요.</p>}
+        {institutions.map((i) => {
+          const items = monthData[i.id] || [];
+          const ok = items.length >= 4 && items.length <= 16;
+          return (
+            <div key={i.id} className="flex items-center gap-3 py-2.5">
+              <span className={`text-xs px-2 py-0.5 rounded-full border ${REGION_STYLE[i.region]}`}>{i.region}</span>
+              <div className="flex-1">
+                <div className="font-medium text-slate-800 text-sm">{i.name}</div>
+                <div className="text-xs text-slate-400">강사: {teacherName(i.instructorId)}</div>
+              </div>
+              <span className={`text-xs px-2 py-1 rounded-full ${items.length === 0 ? "bg-slate-100 text-slate-400" : ok ? "bg-emerald-100 text-emerald-700" : "bg-rose-100 text-rose-600"}`}>
+                {items.length}개 {items.length === 0 ? "미배정" : ok ? "완료" : "부족"}
+              </span>
+              <button onClick={() => onPick(i)} className="bg-indigo-50 text-indigo-700 text-xs font-medium px-3 py-1.5 rounded-lg hover:bg-indigo-100">
+                교구 선택
+              </button>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function StatusTab({ month, setMonth, institutions, teacherName, monthData, onHistory }) {
+  const total = institutions.length;
+  const done = institutions.filter((i) => { const n = (monthData[i.id] || []).length; return n >= 4 && n <= 16; }).length;
+  const catUsage = CATEGORIES.map((cat) => {
+    const codes = itemsOf(cat);
+    let count = 0;
+    Object.values(monthData).forEach((items) => items.forEach((it) => { if (codes.includes(it)) count++; }));
+    return { cat, count };
+  });
+
+  return (
+    <div className="space-y-4">
+      <div className="bg-white rounded-xl border border-slate-200 p-4">
+        <input type="month" value={month} onChange={(e) => setMonth(e.target.value)}
+          className="text-sm border border-slate-200 rounded-lg px-2 py-2 outline-none mb-4" />
+        <div className="grid grid-cols-3 gap-3 mb-4">
+          <div className="bg-slate-50 rounded-lg p-3 text-center">
+            <div className="text-xl font-bold text-slate-800">{total}</div>
+            <div className="text-xs text-slate-500">전체 기관</div>
+          </div>
+          <div className="bg-emerald-50 rounded-lg p-3 text-center">
+            <div className="text-xl font-bold text-emerald-700">{done}</div>
+            <div className="text-xs text-emerald-600">배정 완료</div>
+          </div>
+          <div className="bg-rose-50 rounded-lg p-3 text-center">
+            <div className="text-xl font-bold text-rose-700">{total - done}</div>
+            <div className="text-xs text-rose-600">미완료</div>
+          </div>
+        </div>
+        <div className="divide-y divide-slate-100">
+          {institutions.map((i) => {
+            const items = monthData[i.id] || [];
+            const ok = items.length >= 4 && items.length <= 16;
+            return (
+              <div key={i.id} className="py-2.5">
+                <div className="flex items-center gap-3">
+                  <span className={`text-xs px-2 py-0.5 rounded-full border ${REGION_STYLE[i.region]}`}>{i.region}</span>
+                  <span className="font-medium text-slate-800 text-sm flex-1">{i.name}</span>
+                  <span className="text-xs text-slate-400">{teacherName(i.instructorId)}</span>
+                  <span className={`text-xs px-2 py-1 rounded-full ${items.length === 0 ? "bg-slate-100 text-slate-400" : ok ? "bg-emerald-100 text-emerald-700" : "bg-rose-100 text-rose-600"}`}>
+                    {items.length}개
+                  </span>
+                  <button onClick={() => onHistory(i)} className="text-slate-400 hover:text-indigo-600 p-1">🕓</button>
+                </div>
+                {items.length > 0 && (
+                  <div className="flex flex-wrap gap-1 mt-1.5 ml-1">
+                    {items.map((it) => <span key={it} className="text-[10px] bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded font-mono">{it}</span>)}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      <div className="bg-white rounded-xl border border-slate-200 p-4">
+        <h3 className="text-sm font-semibold text-slate-700 mb-3">카테고리별 이번 달 사용 현황 ({month})</h3>
+        <div className="grid grid-cols-4 sm:grid-cols-8 gap-2">
+          {catUsage.map(({ cat, count }) => (
+            <div key={cat} className="text-center">
+              <div className="text-xs font-mono font-semibold text-slate-700">{cat}</div>
+              <div className="h-1.5 bg-slate-100 rounded-full overflow-hidden mt-1">
+                <div className="h-full bg-indigo-500" style={{ width: `${(count / ITEMS_PER_CAT) * 100}%` }} />
+              </div>
+              <div className="text-[10px] text-slate-400 mt-0.5">{count}/16</div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function InstFormModal({ form, setForm, instructors, onSave, onClose }) {
+  const candidates = instructors.filter((t) => t.region === form.region);
+  return (
+    <Modal title={form.id ? "기관 수정" : "기관 추가"} onClose={onClose}>
+      <div className="space-y-3">
+        <Field label="기관명">
+          <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })}
+            className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-indigo-400" />
+        </Field>
+        <Field label="지역">
+          <select value={form.region} onChange={(e) => setForm({ ...form, region: e.target.value, instructorId: "" })}
+            className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm outline-none">
+            {REGIONS.map((r) => <option key={r} value={r}>{r}</option>)}
+          </select>
+        </Field>
+        <Field label="담당 강사">
+          <select value={form.instructorId || ""} onChange={(e) => setForm({ ...form, instructorId: e.target.value })}
+            className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm outline-none">
+            <option value="">미배정</option>
+            {candidates.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+          </select>
+        </Field>
+      </div>
+      <button onClick={() => onSave(form)} disabled={!form.name.trim()}
+        className="w-full mt-4 bg-indigo-600 text-white text-sm font-medium py-2.5 rounded-lg disabled:opacity-40 hover:bg-indigo-700">
+        저장
+      </button>
+    </Modal>
+  );
+}
+
+function TeacherFormModal({ form, setForm, onSave, onClose }) {
+  return (
+    <Modal title={form.id ? "강사 수정" : "강사 추가"} onClose={onClose}>
+      <div className="space-y-3">
+        <Field label="이름">
+          <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })}
+            className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-indigo-400" />
+        </Field>
+        <Field label="지역">
+          <select value={form.region} onChange={(e) => setForm({ ...form, region: e.target.value })}
+            className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm outline-none">
+            {REGIONS.map((r) => <option key={r} value={r}>{r}</option>)}
+          </select>
+        </Field>
+      </div>
+      <button onClick={() => onSave(form)} disabled={!form.name.trim()}
+        className="w-full mt-4 bg-indigo-600 text-white text-sm font-medium py-2.5 rounded-lg disabled:opacity-40 hover:bg-indigo-700">
+        저장
+      </button>
+    </Modal>
+  );
+}
+
+function PickerModal({ inst, month, selected, historySet, conflictSet, onToggle, onSave, onClose }) {
+  const count = selected.length;
+  const valid = count >= 4 && count <= 16;
+  const getState = (code) => (selected.includes(code) ? "selected" : historySet.has(code) ? "used" : conflictSet.has(code) ? "conflict" : "available");
+  return (
+    <Modal title={`${inst.name} · ${month} 교구 선택`} onClose={onClose} wide>
+      <div className="flex items-center gap-3 mb-3 text-xs flex-wrap">
+        <Legend color="bg-indigo-600" label="선택됨" />
+        <Legend color="bg-slate-200" label="이전 배정(중복불가)" />
+        <Legend color="bg-rose-100 border border-rose-200" label="이번달 타기관 사용중" />
+      </div>
+      <CodeGrid getState={getState} onClick={onToggle} />
+      <div className="flex items-center justify-between mt-3">
+        <span className={`text-sm font-medium ${valid ? "text-emerald-600" : "text-rose-500"}`}>
+          현재 {count}개 선택됨 (4~16개 필요)
+        </span>
+        <button onClick={onSave} disabled={!valid}
+          className="bg-indigo-600 text-white text-sm font-medium px-4 py-2 rounded-lg disabled:opacity-40 hover:bg-indigo-700">
+          저장
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
+function MaterialStatusModal({ inst, usedSet, onClose }) {
+  const usedCount = usedSet.size;
+  const getState = (code) => (usedSet.has(code) ? "filled" : "empty");
+  return (
+    <Modal title={`${inst.name} 교구 현황`} onClose={onClose} wide>
+      <div className="flex items-center gap-3 mb-3 text-xs flex-wrap">
+        <Legend color="bg-emerald-500" label="배정됨" />
+        <Legend color="bg-white border border-slate-200" label="미배정" />
+        <span className="ml-auto text-slate-500 font-medium">
+          전체 {TOTAL_CODES}개 중 배정 {usedCount}개 · 미배정 {TOTAL_CODES - usedCount}개
+        </span>
+      </div>
+      <CodeGrid getState={getState} />
+    </Modal>
+  );
+}
+
+function ScheduleModal({ teacher, institutions, isAdmin, entries, onAdd, onDelete, onClose }) {
+  const [date, setDate] = useState("");
+  const [institutionId, setInstitutionId] = useState("");
+  const candidates = institutions.filter((i) => i.region === teacher.region);
+  return (
+    <Modal title={`${teacher.name} 방문 일정`} onClose={onClose}>
+      {isAdmin && (
+        <div className="flex flex-col sm:flex-row gap-2 mb-4">
+          <input type="date" value={date} onChange={(e) => setDate(e.target.value)}
+            className="border border-slate-200 rounded-lg px-2 py-2 text-sm flex-1 outline-none" />
+          <select value={institutionId} onChange={(e) => setInstitutionId(e.target.value)}
+            className="border border-slate-200 rounded-lg px-2 py-2 text-sm flex-1 outline-none">
+            <option value="">기관 선택</option>
+            {candidates.map((i) => <option key={i.id} value={i.id}>{i.name}</option>)}
+          </select>
+          <button
+            onClick={() => { if (date && institutionId) { onAdd(date, institutionId); setDate(""); setInstitutionId(""); } }}
+            disabled={!date || !institutionId}
+            className="bg-indigo-600 text-white text-sm px-3 py-2 rounded-lg hover:bg-indigo-700 disabled:opacity-40 whitespace-nowrap">
+            추가
+          </button>
+        </div>
+      )}
+      <div className="space-y-1 max-h-[50vh] overflow-y-auto">
+        {entries.length === 0 && <p className="text-sm text-slate-400 py-6 text-center">등록된 일정이 없어요.</p>}
+        {entries.map((e) => {
+          const inst = institutions.find((i) => i.id === e.institutionId);
+          return (
+            <div key={e.id} className="flex items-center gap-2 py-2 border-b border-slate-100 last:border-0">
+              <span className="text-xs font-mono text-slate-500 w-24">{e.date}</span>
+              <span className="text-sm text-slate-800 flex-1">{inst ? inst.name : "(삭제된 기관)"}</span>
+              {inst && <span className={`text-xs px-2 py-0.5 rounded-full border ${REGION_STYLE[inst.region]}`}>{inst.region}</span>}
+              {isAdmin && <button onClick={() => onDelete(e.id)} className="text-slate-400 hover:text-rose-600 p-1">🗑</button>}
+            </div>
+          );
+        })}
+      </div>
+    </Modal>
+  );
+}
+
+function HistoryModal({ inst, assignments, onClose }) {
+  const months = Object.keys(assignments).filter((m) => assignments[m][inst.id]).sort().reverse();
+  return (
+    <Modal title={`${inst.name} 배정 이력`} onClose={onClose}>
+      {months.length === 0 && <p className="text-sm text-slate-400 py-6 text-center">이력이 없어요.</p>}
+      <div className="space-y-3 max-h-[55vh] overflow-y-auto">
+        {months.map((m) => (
+          <div key={m}>
+            <div className="text-xs font-semibold text-slate-500 mb-1">{m} ({assignments[m][inst.id].length}개)</div>
+            <div className="flex flex-wrap gap-1">
+              {assignments[m][inst.id].map((it) => (
+                <span key={it} className="text-[10px] bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded font-mono">{it}</span>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    </Modal>
+  );
+}
+
+function LoginModal({ onSubmit, onClose, error }) {
+  const [name, setName] = useState("");
+  const [pw, setPw] = useState("");
+  return (
+    <Modal title="관리자 로그인" onClose={onClose}>
+      <div className="space-y-3">
+        <Field label="이름">
+          <input value={name} onChange={(e) => setName(e.target.value)} autoFocus
+            className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-indigo-400" />
+        </Field>
+        <Field label="비밀번호">
+          <input type="password" value={pw} onChange={(e) => setPw(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") onSubmit(name, pw); }}
+            className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-indigo-400" />
+        </Field>
+      </div>
+      {error && <p className="text-xs text-rose-500 mt-2">{error}</p>}
+      <button onClick={() => onSubmit(name, pw)} className="w-full mt-4 bg-indigo-600 text-white text-sm font-medium py-2.5 rounded-lg hover:bg-indigo-700">
+        로그인
+      </button>
+      <p className="text-xs text-slate-400 mt-3">처음 로그인이라면 이름은 자유롭게, 비밀번호는 0000을 입력하세요. (관리자 화면에서 변경 가능)</p>
+    </Modal>
+  );
+}
+
+function AdminManageModal({ accounts, currentAdminName, onAdd, onDelete, onChangeMasterPassword, onClose }) {
+  const [name, setName] = useState("");
+  const [pw, setPw] = useState("");
+  const [newMasterPw, setNewMasterPw] = useState("");
+  const [savedMsg, setSavedMsg] = useState(false);
+  return (
+    <Modal title="관리자 계정관리" onClose={onClose}>
+      <div className="flex flex-col sm:flex-row gap-2 mb-4">
+        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="이름"
+          className="border border-slate-200 rounded-lg px-2 py-2 text-sm flex-1 outline-none" />
+        <input type="password" value={pw} onChange={(e) => setPw(e.target.value)} placeholder="비밀번호"
+          className="border border-slate-200 rounded-lg px-2 py-2 text-sm flex-1 outline-none" />
+        <button
+          onClick={() => { if (name.trim() && pw) { onAdd(name, pw); setName(""); setPw(""); } }}
+          disabled={!name.trim() || !pw}
+          className="bg-indigo-600 text-white text-sm px-3 py-2 rounded-lg hover:bg-indigo-700 disabled:opacity-40 whitespace-nowrap">
+          추가
+        </button>
+      </div>
+      <div className="space-y-1 max-h-[35vh] overflow-y-auto mb-4">
+        {accounts.length === 0 && <p className="text-sm text-slate-400 py-4 text-center">아직 추가된 관리자 계정이 없어요. (마스터 비밀번호로 로그인 중)</p>}
+        {accounts.map((a) => (
+          <div key={a.id} className="flex items-center gap-2 py-2 border-b border-slate-100 last:border-0">
+            <span className="text-sm text-slate-800 flex-1">{a.name}{a.name === currentAdminName && " (현재 로그인)"}</span>
+            <button onClick={() => onDelete(a.id)} className="text-slate-400 hover:text-rose-600 p-1">🗑</button>
+          </div>
+        ))}
+      </div>
+
+      <div className="border-t border-slate-100 pt-4">
+        <p className="text-xs font-semibold text-slate-500 mb-2">마스터 비밀번호 변경</p>
+        <div className="flex gap-2">
+          <input type="password" value={newMasterPw} onChange={(e) => setNewMasterPw(e.target.value)} placeholder="새 마스터 비밀번호"
+            className="border border-slate-200 rounded-lg px-2 py-2 text-sm flex-1 outline-none" />
+          <button
+            onClick={() => { if (newMasterPw) { onChangeMasterPassword(newMasterPw); setNewMasterPw(""); setSavedMsg(true); setTimeout(() => setSavedMsg(false), 2000); } }}
+            disabled={!newMasterPw}
+            className="bg-indigo-600 text-white text-sm px-3 py-2 rounded-lg hover:bg-indigo-700 disabled:opacity-40 whitespace-nowrap">
+            변경
+          </button>
+        </div>
+        {savedMsg && <p className="text-xs text-emerald-600 mt-1">변경되었어요.</p>}
+        <p className="text-xs text-slate-400 mt-2">이름 없이 이 비밀번호만으로도 로그인할 수 있는 비상용 비밀번호예요.</p>
+      </div>
+    </Modal>
+  );
+}
+
+function Modal({ title, children, onClose, wide }) {
+  return (
+    <div className="fixed inset-0 bg-black/40 flex items-center justify-center p-4 z-50" onClick={onClose}>
+      <div onClick={(e) => e.stopPropagation()} className={`bg-white rounded-xl p-5 w-full ${wide ? "max-w-2xl" : "max-w-sm"} max-h-[85vh] overflow-y-auto`}>
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="font-semibold text-slate-800">{title}</h3>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-600">×</button>
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function Field({ label, children }) {
+  return (
+    <div>
+      <label className="block text-xs font-medium text-slate-500 mb-1">{label}</label>
+      {children}
+    </div>
+  );
+}
+
+function Legend({ color, label }) {
+  return (
+    <div className="flex items-center gap-1">
+      <span className={`w-3 h-3 rounded ${color}`} />
+      <span className="text-slate-500">{label}</span>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("service-worker.js").catch(() => {});
+  });
+}
+</script>
+</body>
+</html>
