@@ -61,6 +61,7 @@ const parseYMD = (s) => { const [y, m, dd] = s.split("-").map(Number); return ne
 const addDays = (d, n) => new Date(d.getFullYear(), d.getMonth(), d.getDate() + n);
 const addMonths = (d, n) => new Date(d.getFullYear(), d.getMonth() + n, 1);
 const WEEKDAY_KR = ["일", "월", "화", "수", "목", "금", "토"];
+const sortByTime = (a, b) => (a.time || "99:99").localeCompare(b.time || "99:99");
 
 const STATE_STYLE = {
   selected: "bg-indigo-600 text-white border-indigo-600 cursor-pointer",
@@ -264,10 +265,13 @@ function App() {
     setPickerInst(null);
   }
 
-  function addScheduleEntry(instructorId, date, institutionId) {
+  function addScheduleEntry(instructorId, date, institutionId, time, content) {
     const list = schedules[instructorId] || [];
-    const entry = { id: genId("sched"), date, institutionId };
-    const next = { ...schedules, [instructorId]: [...list, entry].sort((a, b) => a.date.localeCompare(b.date)) };
+    const entry = { id: genId("sched"), date, time: time || "", content: content || "", institutionId };
+    const next = {
+      ...schedules,
+      [instructorId]: [...list, entry].sort((a, b) => (a.date === b.date ? sortByTime(a, b) : a.date.localeCompare(b.date))),
+    };
     setSchedules(next);
     persistSchedules(next);
   }
@@ -327,6 +331,7 @@ function App() {
   const entriesByDate = useMemo(() => {
     const map = {};
     allCalEntries.forEach((e) => { (map[e.date] = map[e.date] || []).push(e); });
+    Object.values(map).forEach((arr) => arr.sort(sortByTime));
     return map;
   }, [allCalEntries]);
 
@@ -442,12 +447,7 @@ function App() {
           view={calView} setView={setCalView}
           focus={calFocus} setFocus={setCalFocus}
           entriesByDate={entriesByDate}
-          isAdmin={isAdmin}
           onOpenDay={(dateStr) => setCalDayDetail(dateStr)}
-          instructors={instructors}
-          institutions={institutions}
-          onAdd={addScheduleEntry}
-          onDelete={deleteScheduleEntry}
         />
       )}
 
@@ -479,8 +479,8 @@ function App() {
           teacher={scheduleTeacher}
           institutions={institutions}
           isAdmin={isAdmin}
-          entries={(schedules[scheduleTeacher.id] || []).slice().sort((a, b) => a.date.localeCompare(b.date))}
-          onAdd={(date, institutionId) => addScheduleEntry(scheduleTeacher.id, date, institutionId)}
+          entries={(schedules[scheduleTeacher.id] || []).slice().sort((a, b) => (a.date === b.date ? sortByTime(a, b) : a.date.localeCompare(b.date)))}
+          onAdd={(date, institutionId, time, content) => addScheduleEntry(scheduleTeacher.id, date, institutionId, time, content)}
           onDelete={(entryId) => deleteScheduleEntry(scheduleTeacher.id, entryId)}
           onClose={() => setScheduleTeacher(null)}
         />
@@ -488,11 +488,11 @@ function App() {
       {calDayDetail && (
         <DayDetailModal
           dateStr={calDayDetail}
-          entries={(entriesByDate[calDayDetail] || []).slice().sort((a, b) => a.instructorName.localeCompare(b.instructorName))}
+          entries={entriesByDate[calDayDetail] || []}
           isAdmin={isAdmin}
           instructors={instructors}
           institutions={institutions}
-          onAdd={(instructorId, institutionId) => addScheduleEntry(instructorId, calDayDetail, institutionId)}
+          onAdd={(instructorId, institutionId, time, content) => addScheduleEntry(instructorId, calDayDetail, institutionId, time, content)}
           onDelete={(entry) => deleteScheduleEntry(entry.instructorId, entry.id)}
           onClose={() => setCalDayDetail(null)}
         />
@@ -741,7 +741,7 @@ function StatusTab({ month, setMonth, institutions, teacherName, monthData, onHi
   );
 }
 
-function CalendarTab({ view, setView, focus, setFocus, entriesByDate, isAdmin, onOpenDay, instructors, institutions }) {
+function CalendarTab({ view, setView, focus, setFocus, entriesByDate, onOpenDay }) {
   const focusDate = parseYMD(focus);
   const monthLabel = `${focusDate.getFullYear()}년 ${focusDate.getMonth() + 1}월`;
 
@@ -799,16 +799,19 @@ function CalendarTab({ view, setView, focus, setFocus, entriesByDate, isAdmin, o
             const inMonth = view === "week" || d.getMonth() === focusDate.getMonth();
             const entries = entriesByDate[dateStr] || [];
             const isToday = dateStr === todayStr();
+            const showCount = view === "week" ? 6 : 2;
             return (
               <button key={idx} onClick={() => onOpenDay(dateStr)}
                 className={`text-left border rounded-lg p-1.5 ${view === "week" ? "min-h-[140px]" : "min-h-[70px]"} ${inMonth ? "bg-white border-slate-100" : "bg-slate-50 border-slate-100 opacity-50"} hover:border-indigo-300 transition-colors`}>
                 <div className={`text-xs font-medium mb-1 ${isToday ? "text-indigo-600" : "text-slate-500"}`}>{d.getDate()}{isToday && " (오늘)"}</div>
                 <div className="space-y-0.5">
-                  {entries.slice(0, view === "week" ? 6 : 2).map((e) => (
-                    <div key={e.id} className="text-[10px] bg-indigo-50 text-indigo-700 px-1 py-0.5 rounded truncate">{e.instructorName}</div>
+                  {entries.slice(0, showCount).map((e) => (
+                    <div key={e.id} className="text-[10px] bg-indigo-50 text-indigo-700 px-1 py-0.5 rounded truncate">
+                      {e.time && <span className="font-mono">{e.time} </span>}{e.instructorName}
+                    </div>
                   ))}
-                  {entries.length > (view === "week" ? 6 : 2) && (
-                    <div className="text-[10px] text-slate-400">+{entries.length - (view === "week" ? 6 : 2)}개 더보기</div>
+                  {entries.length > showCount && (
+                    <div className="text-[10px] text-slate-400">+{entries.length - showCount}개 더보기</div>
                   )}
                 </div>
               </button>
@@ -827,10 +830,13 @@ function DayList({ dateStr, entries, onOpen }) {
       <div className="space-y-1">
         {entries.length === 0 && <p className="text-sm text-slate-400 py-6 text-center">이 날짜에 등록된 일정이 없어요.</p>}
         {entries.map((e) => (
-          <div key={e.id} className="flex items-center gap-2 py-2 border-b border-slate-100 last:border-0">
-            <span className={`text-xs px-2 py-0.5 rounded-full border ${REGION_STYLE[e.instructorRegion]}`}>{e.instructorRegion}</span>
-            <span className="text-sm font-medium text-slate-800">{e.instructorName}</span>
-            <span className="text-xs text-slate-400">→ {e.institutionId}</span>
+          <div key={e.id} className="py-2 border-b border-slate-100 last:border-0">
+            <div className="flex items-center gap-2">
+              {e.time && <span className="text-xs font-mono text-indigo-600 w-12">{e.time}</span>}
+              <span className={`text-xs px-2 py-0.5 rounded-full border ${REGION_STYLE[e.instructorRegion]}`}>{e.instructorRegion}</span>
+              <span className="text-sm font-medium text-slate-800">{e.instructorName}</span>
+            </div>
+            {e.content && <p className="text-xs text-slate-500 mt-0.5 ml-1">{e.content}</p>}
           </div>
         ))}
       </div>
@@ -841,6 +847,8 @@ function DayList({ dateStr, entries, onOpen }) {
 function DayDetailModal({ dateStr, entries, isAdmin, instructors, institutions, onAdd, onDelete, onClose }) {
   const [instructorId, setInstructorId] = useState("");
   const [institutionId, setInstitutionId] = useState("");
+  const [time, setTime] = useState("");
+  const [content, setContent] = useState("");
   const selectedTeacher = instructors.find((t) => t.id === instructorId);
   const candidates = selectedTeacher ? institutions.filter((i) => i.region === selectedTeacher.region) : [];
   const instName = (id) => institutions.find((i) => i.id === id)?.name || "(삭제된 기관)";
@@ -850,32 +858,42 @@ function DayDetailModal({ dateStr, entries, isAdmin, instructors, institutions, 
       <div className="space-y-1 max-h-[40vh] overflow-y-auto mb-4">
         {entries.length === 0 && <p className="text-sm text-slate-400 py-4 text-center">등록된 일정이 없어요.</p>}
         {entries.map((e) => (
-          <div key={e.id} className="flex items-center gap-2 py-2 border-b border-slate-100 last:border-0">
-            <span className={`text-xs px-2 py-0.5 rounded-full border ${REGION_STYLE[e.instructorRegion]}`}>{e.instructorRegion}</span>
-            <span className="text-sm font-medium text-slate-800">{e.instructorName}</span>
-            <span className="text-xs text-slate-500 flex-1">→ {instName(e.institutionId)}</span>
-            {isAdmin && <button onClick={() => onDelete(e)} className="text-slate-400 hover:text-rose-600 p-1">🗑</button>}
+          <div key={e.id} className="py-2 border-b border-slate-100 last:border-0">
+            <div className="flex items-center gap-2">
+              {e.time && <span className="text-xs font-mono text-indigo-600 w-12">{e.time}</span>}
+              <span className={`text-xs px-2 py-0.5 rounded-full border ${REGION_STYLE[e.instructorRegion]}`}>{e.instructorRegion}</span>
+              <span className="text-sm font-medium text-slate-800">{e.instructorName}</span>
+              <span className="text-xs text-slate-500 flex-1">→ {instName(e.institutionId)}</span>
+              {isAdmin && <button onClick={() => onDelete(e)} className="text-slate-400 hover:text-rose-600 p-1">🗑</button>}
+            </div>
+            {e.content && <p className="text-xs text-slate-500 mt-0.5 ml-14">{e.content}</p>}
           </div>
         ))}
       </div>
       {isAdmin && (
         <div className="border-t border-slate-100 pt-3">
           <p className="text-xs font-semibold text-slate-500 mb-2">일정 추가</p>
-          <div className="flex flex-col sm:flex-row gap-2">
-            <select value={instructorId} onChange={(e) => { setInstructorId(e.target.value); setInstitutionId(""); }}
-              className="border border-slate-200 rounded-lg px-2 py-2 text-sm flex-1 outline-none">
-              <option value="">강사 선택</option>
-              {instructors.map((t) => <option key={t.id} value={t.id}>{t.name} ({t.region})</option>)}
-            </select>
+          <div className="space-y-2">
+            <div className="flex gap-2">
+              <select value={instructorId} onChange={(e) => { setInstructorId(e.target.value); setInstitutionId(""); }}
+                className="border border-slate-200 rounded-lg px-2 py-2 text-sm flex-1 outline-none">
+                <option value="">강사 선택</option>
+                {instructors.map((t) => <option key={t.id} value={t.id}>{t.name} ({t.region})</option>)}
+              </select>
+              <input type="time" value={time} onChange={(e) => setTime(e.target.value)}
+                className="border border-slate-200 rounded-lg px-2 py-2 text-sm outline-none w-28" />
+            </div>
             <select value={institutionId} onChange={(e) => setInstitutionId(e.target.value)} disabled={!instructorId}
-              className="border border-slate-200 rounded-lg px-2 py-2 text-sm flex-1 outline-none disabled:bg-slate-50">
+              className="w-full border border-slate-200 rounded-lg px-2 py-2 text-sm outline-none disabled:bg-slate-50">
               <option value="">기관 선택</option>
               {candidates.map((i) => <option key={i.id} value={i.id}>{i.name}</option>)}
             </select>
+            <input value={content} onChange={(e) => setContent(e.target.value)} placeholder="메모 (선택, 예: 교구 A세트 지참)"
+              className="w-full border border-slate-200 rounded-lg px-2 py-2 text-sm outline-none" />
             <button
-              onClick={() => { if (instructorId && institutionId) { onAdd(instructorId, institutionId); setInstructorId(""); setInstitutionId(""); } }}
+              onClick={() => { if (instructorId && institutionId) { onAdd(instructorId, institutionId, time, content); setInstructorId(""); setInstitutionId(""); setTime(""); setContent(""); } }}
               disabled={!instructorId || !institutionId}
-              className="bg-indigo-600 text-white text-sm px-3 py-2 rounded-lg hover:bg-indigo-700 disabled:opacity-40 whitespace-nowrap">
+              className="w-full bg-indigo-600 text-white text-sm px-3 py-2 rounded-lg hover:bg-indigo-700 disabled:opacity-40">
               추가
             </button>
           </div>
@@ -1003,23 +1021,31 @@ function MaterialStatusModal({ inst, usedSet, onClose }) {
 
 function ScheduleModal({ teacher, institutions, isAdmin, entries, onAdd, onDelete, onClose }) {
   const [date, setDate] = useState("");
+  const [time, setTime] = useState("");
   const [institutionId, setInstitutionId] = useState("");
+  const [content, setContent] = useState("");
   const candidates = institutions.filter((i) => i.region === teacher.region);
   return (
     <Modal title={`${teacher.name} 방문 일정`} onClose={onClose}>
       {isAdmin && (
-        <div className="flex flex-col sm:flex-row gap-2 mb-4">
-          <input type="date" value={date} onChange={(e) => setDate(e.target.value)}
-            className="border border-slate-200 rounded-lg px-2 py-2 text-sm flex-1 outline-none" />
+        <div className="space-y-2 mb-4">
+          <div className="flex gap-2">
+            <input type="date" value={date} onChange={(e) => setDate(e.target.value)}
+              className="border border-slate-200 rounded-lg px-2 py-2 text-sm flex-1 outline-none" />
+            <input type="time" value={time} onChange={(e) => setTime(e.target.value)}
+              className="border border-slate-200 rounded-lg px-2 py-2 text-sm w-28 outline-none" />
+          </div>
           <select value={institutionId} onChange={(e) => setInstitutionId(e.target.value)}
-            className="border border-slate-200 rounded-lg px-2 py-2 text-sm flex-1 outline-none">
+            className="w-full border border-slate-200 rounded-lg px-2 py-2 text-sm outline-none">
             <option value="">기관 선택</option>
             {candidates.map((i) => <option key={i.id} value={i.id}>{i.name}</option>)}
           </select>
+          <input value={content} onChange={(e) => setContent(e.target.value)} placeholder="메모 (선택, 예: 교구 A세트 지참)"
+            className="w-full border border-slate-200 rounded-lg px-2 py-2 text-sm outline-none" />
           <button
-            onClick={() => { if (date && institutionId) { onAdd(date, institutionId); setDate(""); setInstitutionId(""); } }}
+            onClick={() => { if (date && institutionId) { onAdd(date, institutionId, time, content); setDate(""); setInstitutionId(""); setTime(""); setContent(""); } }}
             disabled={!date || !institutionId}
-            className="bg-indigo-600 text-white text-sm px-3 py-2 rounded-lg hover:bg-indigo-700 disabled:opacity-40 whitespace-nowrap">
+            className="w-full bg-indigo-600 text-white text-sm px-3 py-2 rounded-lg hover:bg-indigo-700 disabled:opacity-40">
             추가
           </button>
         </div>
@@ -1029,11 +1055,15 @@ function ScheduleModal({ teacher, institutions, isAdmin, entries, onAdd, onDelet
         {entries.map((e) => {
           const inst = institutions.find((i) => i.id === e.institutionId);
           return (
-            <div key={e.id} className="flex items-center gap-2 py-2 border-b border-slate-100 last:border-0">
-              <span className="text-xs font-mono text-slate-500 w-24">{e.date}</span>
-              <span className="text-sm text-slate-800 flex-1">{inst ? inst.name : "(삭제된 기관)"}</span>
-              {inst && <span className={`text-xs px-2 py-0.5 rounded-full border ${REGION_STYLE[inst.region]}`}>{inst.region}</span>}
-              {isAdmin && <button onClick={() => onDelete(e.id)} className="text-slate-400 hover:text-rose-600 p-1">🗑</button>}
+            <div key={e.id} className="py-2 border-b border-slate-100 last:border-0">
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-mono text-slate-500 w-20">{e.date}</span>
+                {e.time && <span className="text-xs font-mono text-indigo-600 w-12">{e.time}</span>}
+                <span className="text-sm text-slate-800 flex-1">{inst ? inst.name : "(삭제된 기관)"}</span>
+                {inst && <span className={`text-xs px-2 py-0.5 rounded-full border ${REGION_STYLE[inst.region]}`}>{inst.region}</span>}
+                {isAdmin && <button onClick={() => onDelete(e.id)} className="text-slate-400 hover:text-rose-600 p-1">🗑</button>}
+              </div>
+              {e.content && <p className="text-xs text-slate-500 mt-0.5 ml-20">{e.content}</p>}
             </div>
           );
         })}
