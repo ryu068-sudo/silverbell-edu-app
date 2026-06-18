@@ -55,6 +55,13 @@ const nowYM = () => { const d = new Date(); return `${d.getFullYear()}-${String(
 const todayStr = () => new Date().toISOString().slice(0, 10);
 const isExpired = (endDate) => !!endDate && endDate < todayStr();
 
+const pad2 = (n) => String(n).padStart(2, "0");
+const fmtYMD = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+const parseYMD = (s) => { const [y, m, dd] = s.split("-").map(Number); return new Date(y, m - 1, dd); };
+const addDays = (d, n) => new Date(d.getFullYear(), d.getMonth(), d.getDate() + n);
+const addMonths = (d, n) => new Date(d.getFullYear(), d.getMonth() + n, 1);
+const WEEKDAY_KR = ["일", "월", "화", "수", "목", "금", "토"];
+
 const STATE_STYLE = {
   selected: "bg-indigo-600 text-white border-indigo-600 cursor-pointer",
   used: "bg-slate-200 text-slate-400 border-slate-200 cursor-not-allowed",
@@ -95,6 +102,7 @@ function App() {
   const [banner, setBanner] = useState(null);
 
   const [isAdmin, setIsAdmin] = useState(false);
+  const [isMainAdmin, setIsMainAdmin] = useState(false);
   const [currentAdminName, setCurrentAdminName] = useState("");
   const [showLogin, setShowLogin] = useState(false);
   const [loginError, setLoginError] = useState("");
@@ -111,6 +119,10 @@ function App() {
   const [month, setMonth] = useState(nowYM());
   const [search, setSearch] = useState("");
   const [regionFilter, setRegionFilter] = useState("전체");
+
+  const [calView, setCalView] = useState("month");
+  const [calFocus, setCalFocus] = useState(todayStr());
+  const [calDayDetail, setCalDayDetail] = useState(null);
 
   useEffect(() => {
     let loaded = { roster: false, assignments: false, schedules: false, admins: false, settings: false };
@@ -164,23 +176,35 @@ function App() {
     DOC("settings").set({ masterPassword: pw }).catch((e) => setBanner("저장 실패: " + e.message));
   }
 
-  function handleLogin(name, pw) {
-    const matched = adminAccounts.find((a) => a.name === name.trim() && a.password === pw);
-    if (matched) { setIsAdmin(true); setCurrentAdminName(matched.name); setShowLogin(false); setLoginError(""); return; }
-    if (pw === masterPassword) { setIsAdmin(true); setCurrentAdminName(name.trim() || "마스터관리자"); setShowLogin(false); setLoginError(""); return; }
-    setLoginError("이름 또는 비밀번호가 올바르지 않아요.");
+  function handleLogin(loginId, pw) {
+    const trimmed = loginId.trim();
+    const matched = adminAccounts.find((a) => (a.loginId || a.name) === trimmed && a.password === pw);
+    if (matched) {
+      setIsAdmin(true);
+      setIsMainAdmin(matched.role === "main");
+      setCurrentAdminName(matched.name || matched.loginId);
+      setShowLogin(false); setLoginError("");
+      return;
+    }
+    if (pw === masterPassword) {
+      setIsAdmin(true); setIsMainAdmin(true);
+      setCurrentAdminName(trimmed || "마스터관리자");
+      setShowLogin(false); setLoginError("");
+      return;
+    }
+    setLoginError("아이디 또는 비밀번호가 올바르지 않아요.");
   }
-  function logout() { setIsAdmin(false); setCurrentAdminName(""); }
+  function logout() { setIsAdmin(false); setIsMainAdmin(false); setCurrentAdminName(""); }
   function changeMasterPassword(pw) {
     if (!pw) return;
     setMasterPassword(pw);
     persistMasterPassword(pw);
   }
-  function addAdminAccount(name, pw) {
-    const trimmed = name.trim();
-    if (!trimmed || !pw) return;
-    if (adminAccounts.some((a) => a.name === trimmed)) { setBanner("이미 같은 이름의 관리자 계정이 있어요."); return; }
-    const next = [...adminAccounts, { id: genId("admin"), name: trimmed, password: pw }];
+  function addAdminAccount(form) {
+    const loginId = form.loginId.trim();
+    if (!loginId || !form.password || !form.name.trim()) return;
+    if (adminAccounts.some((a) => (a.loginId || a.name) === loginId)) { setBanner("이미 같은 아이디의 관리자 계정이 있어요."); return; }
+    const next = [...adminAccounts, { id: genId("admin"), ...form, loginId, name: form.name.trim() }];
     setAdminAccounts(next);
     persistAdmins(next);
   }
@@ -290,6 +314,22 @@ function App() {
     return true;
   });
 
+  const allCalEntries = useMemo(() => {
+    const list = [];
+    instructors.forEach((t) => {
+      (schedules[t.id] || []).forEach((e) => {
+        list.push({ ...e, instructorId: t.id, instructorName: t.name, instructorRegion: t.region });
+      });
+    });
+    return list;
+  }, [instructors, schedules]);
+
+  const entriesByDate = useMemo(() => {
+    const map = {};
+    allCalEntries.forEach((e) => { (map[e.date] = map[e.date] || []).push(e); });
+    return map;
+  }, [allCalEntries]);
+
   if (loading) {
     return (
       <div className="flex items-center justify-center h-screen text-slate-500 gap-2">
@@ -306,10 +346,12 @@ function App() {
         <div className="flex items-center gap-3">
           {isAdmin ? (
             <>
-              <span className="text-xs bg-indigo-50 text-indigo-700 px-2 py-1 rounded-full font-medium">🔓 {currentAdminName}님 (관리자)</span>
-              <button onClick={() => setShowAdminManage(true)} className="text-xs text-slate-400 hover:text-indigo-600">계정관리</button>
+              <span className="text-xs bg-indigo-50 text-indigo-700 px-2 py-1 rounded-full font-medium">
+                🔓 {currentAdminName}님 ({isMainAdmin ? "메인관리자" : "서브관리자"})
+              </span>
+              {isMainAdmin && <button onClick={() => setShowAdminManage(true)} className="text-xs text-slate-400 hover:text-indigo-600">계정관리</button>}
               <button onClick={logout} className="text-xs text-slate-400 hover:text-slate-600">로그아웃</button>
-              <button onClick={resetAll} className="flex items-center gap-1 text-xs text-slate-400 hover:text-rose-500 transition-colors">↺ 전체 초기화</button>
+              {isMainAdmin && <button onClick={resetAll} className="flex items-center gap-1 text-xs text-slate-400 hover:text-rose-500 transition-colors">↺ 전체 초기화</button>}
             </>
           ) : (
             <button onClick={() => { setShowLogin(true); setLoginError(""); }} className="flex items-center gap-1 text-xs text-slate-400 hover:text-indigo-600">
@@ -332,6 +374,7 @@ function App() {
           { key: "instructors", label: "강사 관리", icon: "👥" },
           { key: "assign", label: "월별 배정", icon: "📅" },
           { key: "status", label: "배정 현황", icon: "📋" },
+          { key: "calendar", label: "캘린더", icon: "🗓️" },
         ].map((t) => (
           <button
             key={t.key}
@@ -394,6 +437,20 @@ function App() {
         />
       )}
 
+      {tab === "calendar" && (
+        <CalendarTab
+          view={calView} setView={setCalView}
+          focus={calFocus} setFocus={setCalFocus}
+          entriesByDate={entriesByDate}
+          isAdmin={isAdmin}
+          onOpenDay={(dateStr) => setCalDayDetail(dateStr)}
+          instructors={instructors}
+          institutions={institutions}
+          onAdd={addScheduleEntry}
+          onDelete={deleteScheduleEntry}
+        />
+      )}
+
       {instForm && (
         <InstFormModal form={instForm} setForm={setInstForm} instructors={instructors} onSave={saveInstitution} onClose={() => setInstForm(null)} />
       )}
@@ -426,6 +483,18 @@ function App() {
           onAdd={(date, institutionId) => addScheduleEntry(scheduleTeacher.id, date, institutionId)}
           onDelete={(entryId) => deleteScheduleEntry(scheduleTeacher.id, entryId)}
           onClose={() => setScheduleTeacher(null)}
+        />
+      )}
+      {calDayDetail && (
+        <DayDetailModal
+          dateStr={calDayDetail}
+          entries={(entriesByDate[calDayDetail] || []).slice().sort((a, b) => a.instructorName.localeCompare(b.instructorName))}
+          isAdmin={isAdmin}
+          instructors={instructors}
+          institutions={institutions}
+          onAdd={(instructorId, institutionId) => addScheduleEntry(instructorId, calDayDetail, institutionId)}
+          onDelete={(entry) => deleteScheduleEntry(entry.instructorId, entry.id)}
+          onClose={() => setCalDayDetail(null)}
         />
       )}
       {showLogin && (
@@ -672,6 +741,150 @@ function StatusTab({ month, setMonth, institutions, teacherName, monthData, onHi
   );
 }
 
+function CalendarTab({ view, setView, focus, setFocus, entriesByDate, isAdmin, onOpenDay, instructors, institutions }) {
+  const focusDate = parseYMD(focus);
+  const monthLabel = `${focusDate.getFullYear()}년 ${focusDate.getMonth() + 1}월`;
+
+  function nav(dir) {
+    if (view === "month") setFocus(fmtYMD(addMonths(focusDate, dir)));
+    else if (view === "week") setFocus(fmtYMD(addDays(focusDate, dir * 7)));
+    else setFocus(fmtYMD(addDays(focusDate, dir)));
+  }
+
+  let cells = [];
+  if (view === "month") {
+    const monthStart = new Date(focusDate.getFullYear(), focusDate.getMonth(), 1);
+    const gridStart = addDays(monthStart, -monthStart.getDay());
+    cells = Array.from({ length: 42 }, (_, i) => addDays(gridStart, i));
+  } else if (view === "week") {
+    const weekStart = addDays(focusDate, -focusDate.getDay());
+    cells = Array.from({ length: 7 }, (_, i) => addDays(weekStart, i));
+  } else {
+    cells = [focusDate];
+  }
+
+  return (
+    <div className="bg-white rounded-xl border border-slate-200 p-4">
+      <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
+        <div className="flex items-center gap-2">
+          <button onClick={() => nav(-1)} className="px-2 py-1 rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50">‹</button>
+          <span className="text-sm font-semibold text-slate-700 min-w-[100px] text-center">
+            {view === "day" ? focus : monthLabel}
+          </span>
+          <button onClick={() => nav(1)} className="px-2 py-1 rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50">›</button>
+          <button onClick={() => setFocus(todayStr())} className="text-xs text-indigo-600 px-2 py-1 rounded-lg hover:bg-indigo-50">오늘</button>
+        </div>
+        <div className="flex gap-1 bg-slate-100 rounded-lg p-1">
+          {[{ k: "month", l: "월" }, { k: "week", l: "주" }, { k: "day", l: "일" }].map((v) => (
+            <button key={v.k} onClick={() => setView(v.k)}
+              className={`px-3 py-1 text-xs rounded-md font-medium ${view === v.k ? "bg-white shadow text-indigo-600" : "text-slate-500"}`}>
+              {v.l}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {view !== "day" && (
+        <div className={`grid grid-cols-7 gap-1 text-center text-xs font-semibold text-slate-400 mb-1`}>
+          {WEEKDAY_KR.map((w) => <div key={w}>{w}</div>)}
+        </div>
+      )}
+
+      {view === "day" ? (
+        <DayList dateStr={focus} entries={(entriesByDate[focus] || [])} onOpen={() => onOpenDay(focus)} />
+      ) : (
+        <div className={`grid grid-cols-7 gap-1`}>
+          {cells.map((d, idx) => {
+            const dateStr = fmtYMD(d);
+            const inMonth = view === "week" || d.getMonth() === focusDate.getMonth();
+            const entries = entriesByDate[dateStr] || [];
+            const isToday = dateStr === todayStr();
+            return (
+              <button key={idx} onClick={() => onOpenDay(dateStr)}
+                className={`text-left border rounded-lg p-1.5 ${view === "week" ? "min-h-[140px]" : "min-h-[70px]"} ${inMonth ? "bg-white border-slate-100" : "bg-slate-50 border-slate-100 opacity-50"} hover:border-indigo-300 transition-colors`}>
+                <div className={`text-xs font-medium mb-1 ${isToday ? "text-indigo-600" : "text-slate-500"}`}>{d.getDate()}{isToday && " (오늘)"}</div>
+                <div className="space-y-0.5">
+                  {entries.slice(0, view === "week" ? 6 : 2).map((e) => (
+                    <div key={e.id} className="text-[10px] bg-indigo-50 text-indigo-700 px-1 py-0.5 rounded truncate">{e.instructorName}</div>
+                  ))}
+                  {entries.length > (view === "week" ? 6 : 2) && (
+                    <div className="text-[10px] text-slate-400">+{entries.length - (view === "week" ? 6 : 2)}개 더보기</div>
+                  )}
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DayList({ dateStr, entries, onOpen }) {
+  return (
+    <div>
+      <button onClick={onOpen} className="text-sm text-indigo-600 mb-2 hover:underline">{dateStr} 일정 관리 →</button>
+      <div className="space-y-1">
+        {entries.length === 0 && <p className="text-sm text-slate-400 py-6 text-center">이 날짜에 등록된 일정이 없어요.</p>}
+        {entries.map((e) => (
+          <div key={e.id} className="flex items-center gap-2 py-2 border-b border-slate-100 last:border-0">
+            <span className={`text-xs px-2 py-0.5 rounded-full border ${REGION_STYLE[e.instructorRegion]}`}>{e.instructorRegion}</span>
+            <span className="text-sm font-medium text-slate-800">{e.instructorName}</span>
+            <span className="text-xs text-slate-400">→ {e.institutionId}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function DayDetailModal({ dateStr, entries, isAdmin, instructors, institutions, onAdd, onDelete, onClose }) {
+  const [instructorId, setInstructorId] = useState("");
+  const [institutionId, setInstitutionId] = useState("");
+  const selectedTeacher = instructors.find((t) => t.id === instructorId);
+  const candidates = selectedTeacher ? institutions.filter((i) => i.region === selectedTeacher.region) : [];
+  const instName = (id) => institutions.find((i) => i.id === id)?.name || "(삭제된 기관)";
+
+  return (
+    <Modal title={`${dateStr} 일정`} onClose={onClose}>
+      <div className="space-y-1 max-h-[40vh] overflow-y-auto mb-4">
+        {entries.length === 0 && <p className="text-sm text-slate-400 py-4 text-center">등록된 일정이 없어요.</p>}
+        {entries.map((e) => (
+          <div key={e.id} className="flex items-center gap-2 py-2 border-b border-slate-100 last:border-0">
+            <span className={`text-xs px-2 py-0.5 rounded-full border ${REGION_STYLE[e.instructorRegion]}`}>{e.instructorRegion}</span>
+            <span className="text-sm font-medium text-slate-800">{e.instructorName}</span>
+            <span className="text-xs text-slate-500 flex-1">→ {instName(e.institutionId)}</span>
+            {isAdmin && <button onClick={() => onDelete(e)} className="text-slate-400 hover:text-rose-600 p-1">🗑</button>}
+          </div>
+        ))}
+      </div>
+      {isAdmin && (
+        <div className="border-t border-slate-100 pt-3">
+          <p className="text-xs font-semibold text-slate-500 mb-2">일정 추가</p>
+          <div className="flex flex-col sm:flex-row gap-2">
+            <select value={instructorId} onChange={(e) => { setInstructorId(e.target.value); setInstitutionId(""); }}
+              className="border border-slate-200 rounded-lg px-2 py-2 text-sm flex-1 outline-none">
+              <option value="">강사 선택</option>
+              {instructors.map((t) => <option key={t.id} value={t.id}>{t.name} ({t.region})</option>)}
+            </select>
+            <select value={institutionId} onChange={(e) => setInstitutionId(e.target.value)} disabled={!instructorId}
+              className="border border-slate-200 rounded-lg px-2 py-2 text-sm flex-1 outline-none disabled:bg-slate-50">
+              <option value="">기관 선택</option>
+              {candidates.map((i) => <option key={i.id} value={i.id}>{i.name}</option>)}
+            </select>
+            <button
+              onClick={() => { if (instructorId && institutionId) { onAdd(instructorId, institutionId); setInstructorId(""); setInstitutionId(""); } }}
+              disabled={!instructorId || !institutionId}
+              className="bg-indigo-600 text-white text-sm px-3 py-2 rounded-lg hover:bg-indigo-700 disabled:opacity-40 whitespace-nowrap">
+              추가
+            </button>
+          </div>
+        </div>
+      )}
+    </Modal>
+  );
+}
+
 function InstFormModal({ form, setForm, instructors, onSave, onClose }) {
   const candidates = instructors.filter((t) => t.region === form.region);
   return (
@@ -851,55 +1064,73 @@ function HistoryModal({ inst, assignments, onClose }) {
 }
 
 function LoginModal({ onSubmit, onClose, error }) {
-  const [name, setName] = useState("");
+  const [loginId, setLoginId] = useState("");
   const [pw, setPw] = useState("");
   return (
     <Modal title="관리자 로그인" onClose={onClose}>
       <div className="space-y-3">
-        <Field label="이름">
-          <input value={name} onChange={(e) => setName(e.target.value)} autoFocus
+        <Field label="아이디">
+          <input value={loginId} onChange={(e) => setLoginId(e.target.value)} autoFocus
             className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-indigo-400" />
         </Field>
         <Field label="비밀번호">
           <input type="password" value={pw} onChange={(e) => setPw(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Enter") onSubmit(name, pw); }}
+            onKeyDown={(e) => { if (e.key === "Enter") onSubmit(loginId, pw); }}
             className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-indigo-400" />
         </Field>
       </div>
       {error && <p className="text-xs text-rose-500 mt-2">{error}</p>}
-      <button onClick={() => onSubmit(name, pw)} className="w-full mt-4 bg-indigo-600 text-white text-sm font-medium py-2.5 rounded-lg hover:bg-indigo-700">
+      <button onClick={() => onSubmit(loginId, pw)} className="w-full mt-4 bg-indigo-600 text-white text-sm font-medium py-2.5 rounded-lg hover:bg-indigo-700">
         로그인
       </button>
-      <p className="text-xs text-slate-400 mt-3">처음 로그인이라면 이름은 자유롭게, 비밀번호는 0000을 입력하세요. (관리자 화면에서 변경 가능)</p>
+      <p className="text-xs text-slate-400 mt-3">처음 로그인이라면 아이디는 자유롭게, 비밀번호는 0000을 입력하세요. (관리자 화면에서 변경 가능)</p>
     </Modal>
   );
 }
 
 function AdminManageModal({ accounts, currentAdminName, onAdd, onDelete, onChangeMasterPassword, onClose }) {
-  const [name, setName] = useState("");
-  const [pw, setPw] = useState("");
+  const blank = { loginId: "", password: "", name: "", phone: "", position: "", region: REGIONS[0], role: "sub" };
+  const [form, setForm] = useState(blank);
   const [newMasterPw, setNewMasterPw] = useState("");
   const [savedMsg, setSavedMsg] = useState(false);
+
   return (
-    <Modal title="관리자 계정관리" onClose={onClose}>
-      <div className="flex flex-col sm:flex-row gap-2 mb-4">
-        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="이름"
-          className="border border-slate-200 rounded-lg px-2 py-2 text-sm flex-1 outline-none" />
-        <input type="password" value={pw} onChange={(e) => setPw(e.target.value)} placeholder="비밀번호"
-          className="border border-slate-200 rounded-lg px-2 py-2 text-sm flex-1 outline-none" />
-        <button
-          onClick={() => { if (name.trim() && pw) { onAdd(name, pw); setName(""); setPw(""); } }}
-          disabled={!name.trim() || !pw}
-          className="bg-indigo-600 text-white text-sm px-3 py-2 rounded-lg hover:bg-indigo-700 disabled:opacity-40 whitespace-nowrap">
-          추가
-        </button>
+    <Modal title="관리자 계정관리" onClose={onClose} wide>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-3">
+        <Field label="아이디"><input value={form.loginId} onChange={(e) => setForm({ ...form, loginId: e.target.value })} className="w-full border border-slate-200 rounded-lg px-2 py-2 text-sm outline-none" /></Field>
+        <Field label="비밀번호"><input type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} className="w-full border border-slate-200 rounded-lg px-2 py-2 text-sm outline-none" /></Field>
+        <Field label="이름"><input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className="w-full border border-slate-200 rounded-lg px-2 py-2 text-sm outline-none" /></Field>
+        <Field label="전화번호"><input value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} className="w-full border border-slate-200 rounded-lg px-2 py-2 text-sm outline-none" /></Field>
+        <Field label="직급"><input value={form.position} onChange={(e) => setForm({ ...form, position: e.target.value })} className="w-full border border-slate-200 rounded-lg px-2 py-2 text-sm outline-none" /></Field>
+        <Field label="지역">
+          <select value={form.region} onChange={(e) => setForm({ ...form, region: e.target.value })} className="w-full border border-slate-200 rounded-lg px-2 py-2 text-sm outline-none">
+            {REGIONS.map((r) => <option key={r} value={r}>{r}</option>)}
+          </select>
+        </Field>
+        <Field label="권한">
+          <select value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })} className="w-full border border-slate-200 rounded-lg px-2 py-2 text-sm outline-none">
+            <option value="sub">서브관리자</option>
+            <option value="main">메인관리자</option>
+          </select>
+        </Field>
       </div>
-      <div className="space-y-1 max-h-[35vh] overflow-y-auto mb-4">
+      <button
+        onClick={() => { if (form.loginId.trim() && form.password && form.name.trim()) { onAdd(form); setForm(blank); } }}
+        disabled={!form.loginId.trim() || !form.password || !form.name.trim()}
+        className="w-full bg-indigo-600 text-white text-sm px-3 py-2 rounded-lg hover:bg-indigo-700 disabled:opacity-40 mb-4">
+        관리자 추가
+      </button>
+
+      <div className="space-y-1 max-h-[30vh] overflow-y-auto mb-4">
         {accounts.length === 0 && <p className="text-sm text-slate-400 py-4 text-center">아직 추가된 관리자 계정이 없어요. (마스터 비밀번호로 로그인 중)</p>}
         {accounts.map((a) => (
-          <div key={a.id} className="flex items-center gap-2 py-2 border-b border-slate-100 last:border-0">
-            <span className="text-sm text-slate-800 flex-1">{a.name}{a.name === currentAdminName && " (현재 로그인)"}</span>
-            <button onClick={() => onDelete(a.id)} className="text-slate-400 hover:text-rose-600 p-1">🗑</button>
+          <div key={a.id} className="flex items-center gap-2 py-2 border-b border-slate-100 last:border-0 text-sm">
+            <span className={`text-xs px-2 py-0.5 rounded-full border ${a.role === "main" ? "bg-indigo-100 text-indigo-700 border-indigo-200" : "bg-slate-100 text-slate-600 border-slate-200"}`}>
+              {a.role === "main" ? "메인" : "서브"}
+            </span>
+            <span className="text-slate-800 font-medium">{a.name}{a.name === currentAdminName && " (현재 로그인)"}</span>
+            <span className="text-xs text-slate-400">{a.position} · {a.region} · {a.phone}</span>
+            <button onClick={() => onDelete(a.id)} className="ml-auto text-slate-400 hover:text-rose-600 p-1">🗑</button>
           </div>
         ))}
       </div>
@@ -917,7 +1148,6 @@ function AdminManageModal({ accounts, currentAdminName, onAdd, onDelete, onChang
           </button>
         </div>
         {savedMsg && <p className="text-xs text-emerald-600 mt-1">변경되었어요.</p>}
-        <p className="text-xs text-slate-400 mt-2">이름 없이 이 비밀번호만으로도 로그인할 수 있는 비상용 비밀번호예요.</p>
       </div>
     </Modal>
   );
